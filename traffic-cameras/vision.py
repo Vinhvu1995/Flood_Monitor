@@ -8,7 +8,7 @@ Fallback: brightness/texture heuristic. Never raises.
 
 Output per image: {flooded, confidence, evidence, mask_path}.
 """
-import base64, json, os, sys, urllib.request
+import base64, json, os, re, sys, urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "webscraper", "src"))
@@ -18,8 +18,9 @@ VISION_MODEL = BASETEN_MODEL
 
 
 def enabled() -> bool:
+    from meta_llm import meta_key
     return os.environ.get("USE_META_VISION") == "1" and bool(
-        os.environ.get("BASETEN_API_KEY") or os.environ.get("META_API_KEY"))
+        os.environ.get("BASETEN_API_KEY") or meta_key())
 
 
 def _baseten_vision(image_bytes: bytes) -> dict | None:
@@ -54,23 +55,42 @@ def _baseten_vision(image_bytes: bytes) -> dict | None:
 
 
 def _sam_mask(image_bytes: bytes, sidecar_path: str | None) -> str | None:
-    """SAM 3.1 water mask via Model API. None when unconfigured or failed."""
-    url = os.environ.get("SAM_API_URL", "")
-    key = os.environ.get("SAM_API_KEY", "") or os.environ.get("META_API_KEY", "")
-    if not url or not key or sidecar_path is None:
+    """SAM 3.1 water mask via Model API Responses API (model sam-3.1).
+
+    Per meta-models/meta-sam: base defaults to https://api.meta.ai/v1.
+    Returns the mask path, or None (honest) when keyless, shape-unknown,
+    or failed. Never raises, never fabricates a mask.
+    """
+    from meta_llm import META_BASE_DEFAULT, SAM_MODEL_DEFAULT, meta_key
+    base = os.environ.get("SAM_API_BASE_URL", META_BASE_DEFAULT).rstrip("/")
+    key = os.environ.get("SAM_API_KEY", "") or meta_key()
+    if not key or sidecar_path is None:
         return None
+    body = json.dumps({
+        "model": os.environ.get("SAM_MODEL", SAM_MODEL_DEFAULT),
+        "input": [{"role": "user", "content": [
+            {"type": "input_text",
+             "text": "Segment water/flooded regions. Reply with a base64 PNG mask."},
+            {"type": "input_image",
+             "image_url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()},
+        ]}],
+    }).encode()
     try:
         req = urllib.request.Request(
-            url, data=image_bytes,
-            headers={"Content-Type": "image/jpeg",
+            base + "/v1/responses", data=body,
+            headers={"Content-Type": "application/json",
                      "Authorization": "Bearer " + key})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            mask = r.read()
-        if len(mask) < 100:
-            return None
+        with urllib.request.urlopen(req, timeout=180) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    m = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", raw)
+    if not m:
+        return None
+    try:
         out = sidecar_path + ".mask.png"
         with open(out, "wb") as f:
-            f.write(mask)
+            f.write(base64.b64decode(m.group(1)))
         return out
     except Exception:
         return None

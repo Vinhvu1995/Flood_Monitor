@@ -25,6 +25,13 @@ BASETEN_MODEL = "meta-models/muse-spark-open-1026"
 BASETEN_URL_DEFAULT = "https://inference.baseten.co/v1/chat/completions"
 META_MODEL_DEFAULT = "muse-spark"
 META_URL_DEFAULT = "https://api.meta.ai/v1/chat/completions"
+META_BASE_DEFAULT = "https://api.meta.ai/v1"
+SAM_MODEL_DEFAULT = "sam-3.1"
+
+
+def meta_key() -> str:
+    """Meta key: META_API_KEY first, MODEL_API_KEY alias (Meta's documented name)."""
+    return os.environ.get("META_API_KEY", "") or os.environ.get("MODEL_API_KEY", "")
 
 PROMPT_TMPL = (
     "Decide if the article reports current flooding in {country} between "
@@ -100,7 +107,7 @@ def _baseten_extract(prompt: str) -> tuple[dict | None, dict]:
 
 
 def _meta_fallback_extract(prompt: str) -> tuple[dict | None, dict]:
-    key = os.environ.get("META_API_KEY", "")
+    key = meta_key()
     if not key:
         return None, {}
     url = os.environ.get("META_API_URL", META_URL_DEFAULT)
@@ -117,7 +124,7 @@ def _meta_fallback_extract(prompt: str) -> tuple[dict | None, dict]:
 
 def enabled() -> bool:
     return os.environ.get("USE_META_LLM") == "1" and bool(
-        os.environ.get("BASETEN_API_KEY") or os.environ.get("META_API_KEY"))
+        os.environ.get("BASETEN_API_KEY") or meta_key())
 
 
 def extract(text: str, country: str, start: str, end: str) -> dict | None:

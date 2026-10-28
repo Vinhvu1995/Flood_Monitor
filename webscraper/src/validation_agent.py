@@ -35,14 +35,15 @@ def rule_verdict(url: str, location: dict, article_text: str,
     return True, "rule pass; needs Spark confirm" if _meta_on() else "rule pass (offline)"
 
 def _meta_on() -> bool:
-    return os.environ.get("USE_META_LLM") == "1" and bool(os.environ.get("META_API_KEY"))
+    from meta_llm import meta_key
+    return os.environ.get("USE_META_LLM") == "1" and bool(meta_key())
 
 def meta_confirm(url: str, location: dict, prior: tuple[bool, str]) -> tuple[bool, str]:
     """Spark second opinion via tool-calling-shaped JSON. None-safe offline."""
     if not _meta_on():
         return prior
     try:
-        from meta_llm import PROMPT_TMPL  # reuse endpoint config
+        from meta_llm import META_URL_DEFAULT, meta_key  # reuse endpoint config
         import urllib.request
         body = json.dumps({
             "model": os.environ.get("META_MODEL", "muse-spark"),
@@ -54,9 +55,9 @@ def meta_confirm(url: str, location: dict, prior: tuple[bool, str]) -> tuple[boo
             "response_format": {"type": "json_object"},
         }).encode()
         req = urllib.request.Request(
-            os.environ.get("META_API_URL", "https://api.meta.com/v1/chat/completions"),
+            os.environ.get("META_API_URL", META_URL_DEFAULT),
             data=body, headers={"Content-Type": "application/json",
-                                "Authorization": "Bearer " + os.environ["META_API_KEY"]})
+                                "Authorization": "Bearer " + meta_key()})
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
         v = json.loads(data["choices"][0]["message"]["content"])
