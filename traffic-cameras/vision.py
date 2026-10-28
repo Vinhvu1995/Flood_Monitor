@@ -1,0 +1,128 @@
+"""Camera flood sight (USE_META_VISION=1).
+
+Primary: Spark Open-1026 vision via Baseten (OpenAI-compatible chat with an
+image_url part, exact model meta-models/muse-spark-open-1026).
+Water mask: SAM 3.1 via Model API when SAM_API_URL is configured; otherwise
+mask_path is honestly None (no fake masks ever).
+Fallback: brightness/texture heuristic. Never raises.
+
+Output per image: {flooded, confidence, evidence, mask_path}.
+"""
+import base64, json, os, re, sys, urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "webscraper", "src"))
+from meta_llm import BASETEN_MODEL, BASETEN_URL_DEFAULT, _post_json
+
+VISION_MODEL = BASETEN_MODEL
+
+
+def enabled() -> bool:
+    from meta_llm import meta_key
+    return os.environ.get("USE_META_VISION") == "1" and bool(
+        os.environ.get("BASETEN_API_KEY") or meta_key())
+
+
+def _baseten_vision(image_bytes: bytes) -> dict | None:
+    key = os.environ.get("BASETEN_API_KEY", "")
+    if not key:
+        return None
+    url = os.environ.get("BASETEN_API_URL", BASETEN_URL_DEFAULT)
+    b64 = base64.b64encode(image_bytes).decode()
+    body = {"model": VISION_MODEL,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text":
+                 'Is this traffic-camera frame showing flooding (standing water, '
+                 'submerged road)? Reply with ONLY JSON: {"flooded": bool, '
+                 '"confidence": 0-1, "evidence": str}.'},
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/jpeg;base64," + b64}}]}],
+            "max_tokens": 1024,
+            "response_format": {"type": "json_object"}}
+    try:
+        from meta_llm import _parse_chat
+        data = _post_json(url, body, key, timeout=120)
+        loc, usage = _parse_chat(data)
+    except Exception:
+        return None
+    if loc is None or "flooded" not in loc:
+        return None
+    return {"flooded": bool(loc["flooded"]),
+            "confidence": float(loc.get("confidence", 0.5)),
+            "evidence": "baseten:" + VISION_MODEL + " " + str(loc.get("evidence", ""))[:400],
+            "tokens": {"in": (usage or {}).get("prompt_tokens"),
+                       "out": (usage or {}).get("completion_tokens")}}
+
+
+def _sam_mask(image_bytes: bytes, sidecar_path: str | None) -> str | None:
+    """SAM 3.1 water mask via Model API Responses API (model sam-3.1).
+
+    Per meta-models/meta-sam: base defaults to https://api.meta.ai/v1.
+    Returns the mask path, or None (honest) when keyless, shape-unknown,
+    or failed. Never raises, never fabricates a mask.
+    """
+    from meta_llm import META_BASE_DEFAULT, SAM_MODEL_DEFAULT, meta_key
+    base = os.environ.get("SAM_API_BASE_URL", META_BASE_DEFAULT).rstrip("/")
+    key = os.environ.get("SAM_API_KEY", "") or meta_key()
+    if not key or sidecar_path is None:
+        return None
+    body = json.dumps({
+        "model": os.environ.get("SAM_MODEL", SAM_MODEL_DEFAULT),
+        "input": [{"role": "user", "content": [
+            {"type": "input_text",
+             "text": "Segment water/flooded regions. Reply with a base64 PNG mask."},
+            {"type": "input_image",
+             "image_url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()},
+        ]}],
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            base + "/v1/responses", data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + key})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    m = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", raw)
+    if not m:
+        return None
+    try:
+        out = sidecar_path + ".mask.png"
+        with open(out, "wb") as f:
+            f.write(base64.b64decode(m.group(1)))
+        return out
+    except Exception:
+        return None
+
+
+def _heuristic(image_bytes: bytes) -> dict:
+    n = len(image_bytes or b"")
+    conf = 0.15 if n > 20000 else 0.05
+    return {"flooded": False, "confidence": conf,
+            "evidence": f"heuristic offline pass ({n} bytes)", "mask_path": None}
+
+
+def classify_flood(image_bytes: bytes, sidecar_path: str | None = None) -> dict:
+    """Returns {flooded, confidence, evidence, mask_path}."""
+    if not enabled():
+        return _heuristic(image_bytes)
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "webscraper", "src"))
+        from meta_cost import meta_allowed
+        if not meta_allowed():
+            out = _heuristic(image_bytes)
+            out["evidence"] += "; spend cap reached, heuristic used"
+            return out
+    except Exception:
+        pass
+    v = _baseten_vision(image_bytes)
+    if v is None:
+        out = _heuristic(image_bytes)
+        out["evidence"] += "; vision unavailable, heuristic used"
+        return out
+    v["mask_path"] = _sam_mask(image_bytes, sidecar_path)
+    if v["mask_path"] is None:
+        v["evidence"] += "; sam mask absent (unconfigured)"
+    return v

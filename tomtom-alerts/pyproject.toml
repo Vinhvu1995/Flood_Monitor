@@ -1,0 +1,16 @@
+[project]
+name = "tomtom-alerts"
+version = "0.1.0"
+description = "TomTom flood incident monitor"
+requires-python = ">=3.12"
+dependencies = [
+    "requests",
+    "python-dotenv",
+    "mapbox-vector-tile",
+    "boto3",
+    "geopandas",
+    "pyarrow",
+    "numpy",
+    "pillow",
+    "scipy",
+]
