@@ -21,14 +21,38 @@ def clean_url(u: str) -> str:
     return u.rstrip("?&")
 
 
-def fetch_feed(feed: tuple, since) -> tuple[list, str | None]:
+def parse_pub_date(pub: str):
+    """RFC 2822 or ISO to naive UTC datetime; None when unparseable."""
+    pub = (pub or "").strip()
+    if not pub:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(pub)
+        if dt is not None:
+            return dt.replace(tzinfo=None)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(pub.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def fetch_feed(feed: tuple, since, fetch_xml=None) -> tuple[list, str | None]:
     source, region, url = feed
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            xml = r.read().decode("utf-8", "replace")
+        if fetch_xml is not None:
+            xml = fetch_xml(url)
+            xml = xml.decode("utf-8", "replace") if isinstance(xml, bytes) else xml
+        else:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                xml = r.read().decode("utf-8", "replace")
     except Exception as e:
         return [], f"{source}: {str(e)[:120]}"
+    xml = re.sub(r"<(\w+):(item|entry|title|link|pubDate|published|updated)([\s>])", r"<\2\3", xml)
+    xml = re.sub(r"</(\w+):(item|entry|title|link|pubDate|published|updated)>", r"</\2>", xml)
     items = re.findall(r"<item>.*?</item>|<entry>.*?</entry>", xml, re.S)
     hits = []
     for it in items:
@@ -37,6 +61,9 @@ def fetch_feed(feed: tuple, since) -> tuple[list, str | None]:
         link = link or ((re.search(r"<link[^>]*href=\"([^\"]+)\"", it) or [None, ""])[1])
         pub = (re.search(r"<pubDate>(.*?)</pubDate>|<published>(.*?)</published>|<updated>(.*?)</updated>", it, re.S) or [None, ""])[1]
         if FLOOD_RE.search(re.sub(r"<[^>]+>", " ", title)):
+            dt = parse_pub_date(pub)
+            if since is not None and dt is not None and dt < since:
+                continue  # outside the window
             hits.append({"source": source, "region": region, "title": re.sub(r"<[^>]+>", " ", title).strip(),
                          "url": clean_url(re.sub(r"<[^>]+>", "", link or "").strip()), "date": (pub or "").strip()})
     return hits, None

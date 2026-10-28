@@ -111,6 +111,95 @@ def fetch_text(url: str, timeout=20) -> tuple[str, dict]:
     return text, {"main_images": imgs[:3], "link_ratio": ratio}
 
 
+NON_PLACE = re.compile(
+    r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|"
+    r"January|February|March|April|May|June|July|August|September|October|"
+    r"November|December|Storm|Flood|Flooding|Floods|After|Before|During|"
+    r"United|South|North|East|West|New|Heavy|Severe|Flash|By)$", re.I)
+
+# Site-chrome words: nav/footer/newsletter/promo text scraped with the article.
+# A candidate made ONLY of these (or ≤2 chars) is contamination, not a place.
+CHROME_WORDS = {
+    "public", "newsletter", "newsletters", "jobs", "book", "books", "cars",
+    "homes", "home", "local", "skip", "close", "next", "previous", "print",
+    "full", "news", "star", "press", "guardian", "echo", "live", "traffic",
+    "politics", "sport", "puzzles", "reader", "rewards", "archive",
+    "newspaper", "newspapers", "notices", "notice", "reporter", "young",
+    "pub", "federation", "signin", "sign", "login", "subscribe",
+    "subscription", "menu", "search", "share", "follow",
+    "advertisement", "cookie", "cookies", "privacy", "terms", "contact",
+    # paper-name / section / nav words (never standalone places)
+    "national", "telegraph", "mail", "express", "mirror", "metro", "record",
+    "herald", "post", "gazette", "chronicle", "argus", "advertiser", "times",
+    "sun", "courier", "journal", "observer", "standard", "independent",
+    "evening", "morning", "weekly", "daily", "sunday",
+    "features", "districts", "district", "dock", "shop", "contact", "more",
+    "foundation", "gannett", "crime", "business", "farming", "housing",
+    "education", "health", "travel", "weather", "emergency", "section",
+    "the", "a", "an", "this", "that", "these", "those", "its", "their",
+    "our", "your",
+    # footer/nav/boilerplate words
+    "galleries", "gallery", "picture", "pictures", "image", "images",
+    "comments", "comment", "latest", "american", "journalists", "journalist",
+    "independence", "economy", "fact", "check", "seven", "days", "day",
+    "human", "hume", "hum",
+}
+
+def _word_is_chrome(w: str) -> bool:
+    low = w.lower()
+    if low in CHROME_WORDS:
+        return True
+    # truncated fragments from the 3-word window ("hom", "loc")
+    return len(low) >= 3 and any(c.startswith(low) for c in CHROME_WORDS)
+
+def is_chrome(name: str) -> bool:
+    words = re.findall(r"[A-Za-z]+", name or "")
+    if not words:
+        return True
+    if len("".join(words)) <= 2:
+        return True
+    return all(_word_is_chrome(w) for w in words)
+
+def strip_chrome(name: str) -> str:
+    """Remove chrome words from a compound candidate; "" when nothing remains."""
+    kept = [w for w in (name or "").split() if not _word_is_chrome(w)]
+    return " ".join(kept)
+
+def heuristic_candidates(text: str, start: str, limit: int = 6) -> list[dict]:
+    """Offline fallback: capitalized phrases within 120 chars of a flood
+    keyword become candidate locations (deduped, capped). Storm event names
+    and site chrome are filtered; chrome words are stripped from compounds."""
+    text = text or ""
+    storm_names = set()
+    for sm in re.finditer(r"(?i)\bstorm\s+([A-Z][a-z]+(?:\s+and\s+[A-Z][a-z]+)?)", text):
+        for w in re.findall(r"[A-Z][a-z]+", sm.group(1)):
+            storm_names.add(w.lower())
+    seen, out = set(), []
+    for m in FLOOD_NEAR_RE.finditer(text):
+        window = text[max(0, m.start() - 120): m.end() + 120]
+        for ph in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b", window):
+            name = ph.group(1)
+            words = name.split()
+            if any(NON_PLACE.match(w) for w in words):
+                continue
+            # author bylines ("By Chloe Boden"): skip what "By" introduces
+            before = window[max(0, ph.start() - 5): ph.start()]
+            if re.search(r"(?i)\bby\s+$", before):
+                continue
+            if any(w.lower() in storm_names for w in words):
+                continue  # storm event name, not a place
+            name = strip_chrome(name)
+            if not name or is_chrome(name):
+                continue
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append({"name": name, "date": start, "context": window.strip()[:200]})
+                if len(out) >= limit:
+                    return out
+    return out
+
+
 def llm_params(model: str) -> dict:
     """gpt-5-nano: response_format + reasoning_effort, NO temperature (fails every request)."""
     if model.startswith(("o1", "o3", "o4")):
@@ -140,10 +229,8 @@ def llm_extract(text: str, country: str, start: str, end: str, model="gpt-5-nano
               f"Extract explicitly named places at most specific granularity. "
               f"Output {{\"flood_event\": bool, \"locations\": [{{\"name\",\"date\",\"context\"}}]}}.\n{text[:6000]}")
     if client is None:
-        # offline fallback: keyword heuristic
-        locs = []
-        if FLOOD_NEAR_RE.search(text):
-            locs = [{"name": country, "date": start, "context": text[:200]}]
+        # offline fallback: proper-noun candidates near flood keywords
+        locs = heuristic_candidates(text, start) if FLOOD_NEAR_RE.search(text or "") else []
         return {"flood_event": bool(locs), "locations": locs}
     return client.extract(prompt, params)
 
@@ -198,10 +285,20 @@ def run_pipeline(args, hooks=None) -> dict:
             json.dump(summary, f, indent=2)
 
     set_stage("scrape_and_geocode")
-    # Step 1 discovery
-    discover = hooks.get("discover") or (lambda qs: [])
+    # Step 1 discovery (production default: keyless RSS + GDELT + GNews;
+    # CSE only when GOOGLE_API_KEY/SEARCH_ENGINE_ID resolve — never hardcoded)
+    from sources import dedup_urls, build_sources
+    _srcs = build_sources(cfg)
+    def _default_discover(qs):
+        found = []
+        for name in ("rss", "gdelt", "gnews_rss"):
+            try:
+                found += _srcs[name].search(qs, start, end) or []
+            except Exception as e:
+                summary.setdefault("batch_warnings", []).append(f"{name}: {str(e)[:150]}")
+        return found
+    discover = hooks.get("discover") or _default_discover
     urls = discover(discovery_queries(cfg))
-    from sources import dedup_urls
     urls = dedup_urls(urls)
     # Step 2 scrape
     fetch = hooks.get("fetch") or (lambda u: ("", {"error": "no-fetcher"}))

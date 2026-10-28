@@ -33,5 +33,5 @@ Teams alerting was removed per owner decision — all alerts are local logs.
   (default: heuristic fallback, pipeline never breaks).
 
 ## Keys (names only — never committed)
-- `META_API_KEY` (Model API, Spark), `BASETEN_API_KEY` (Spark Open/Glimmer),
+- `META_API_KEY` (Model API, Spark — direct only, no paid partner endpoints),
   `TOMTOM_API_KEY`, `OPENAI_API_KEY` (fallback only).

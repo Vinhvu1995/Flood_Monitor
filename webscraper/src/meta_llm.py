@@ -9,7 +9,7 @@ Env:
   USE_META_LLM=1        enable Spark path
   META_API_URL          Model API chat endpoint (default: Meta Model API)
   META_API_KEY          key (name only in repo; never committed)
-  META_MODEL            default: muse-spark (override for Spark Open-1026 etc.)
+  META_MODEL            default: muse-spark (Model API direct only)
 """
 import json, os, urllib.request
 

@@ -19,10 +19,13 @@ KEEP_FALSE_HINTS = (
 def rule_verdict(url: str, location: dict, article_text: str,
                  date_signal: str = "none") -> tuple[bool, str]:
     """Deterministic first pass. Returns (keep, reason)."""
+    from main_country import is_chrome
     loc = (location.get("location") or "").lower()
     txt = (article_text or "").lower()
     if date_signal == "out_of_window":
         return False, "out_of_window date signal"
+    if is_chrome(location.get("location") or ""):
+        return False, "sidebar contamination (site chrome, not a place)"
     if any(h in txt[:500] for h in KEEP_FALSE_HINTS):
         return False, "closure/index/dashboard shape"
     if "snippet" in txt and len(article_text or "") < 400:
