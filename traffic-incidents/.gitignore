@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+incidents.db
+cron.log
+*.log
+*.parquet
+.pytest_cache/
+.ruff_cache/

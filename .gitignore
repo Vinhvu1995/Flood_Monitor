@@ -1,0 +1,9 @@
+.env
+__pycache__/
+.venv/
+*.pyc
+_napoleon_data/
+exports/
+cron_logs/
+*.log
+.DS_Store
