@@ -12,7 +12,8 @@ Rates (USD/1M tokens) overridable by env for refreshes without code edits:
 """
 import json, os, time
 
-COST_LOG = os.path.join("cron_logs", "meta_cost.jsonl")
+COST_LOG = os.environ.get("META_COST_LOG",
+                          os.path.join("cron_logs", "meta_cost.jsonl"))
 
 RATES = {
     "spark": (float(os.environ.get("SPARK_IN", 1.25)),
@@ -43,10 +44,10 @@ def record(model: str, tokens: dict | None, run_id: str = "") -> dict:
     return entry
 
 
-def spent_since(path: str = COST_LOG) -> float:
+def spent_since(path: str | None = None) -> float:
     total = 0.0
     try:
-        with open(path) as f:
+        with open(path or COST_LOG) as f:
             for line in f:
                 try:
                     total += float(json.loads(line).get("cost", 0) or 0)

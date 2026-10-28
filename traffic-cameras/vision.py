@@ -87,6 +87,16 @@ def classify_flood(image_bytes: bytes, sidecar_path: str | None = None) -> dict:
     """Returns {flooded, confidence, evidence, mask_path}."""
     if not enabled():
         return _heuristic(image_bytes)
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "webscraper", "src"))
+        from meta_cost import meta_allowed
+        if not meta_allowed():
+            out = _heuristic(image_bytes)
+            out["evidence"] += "; spend cap reached, heuristic used"
+            return out
+    except Exception:
+        pass
     v = _baseten_vision(image_bytes)
     if v is None:
         out = _heuristic(image_bytes)

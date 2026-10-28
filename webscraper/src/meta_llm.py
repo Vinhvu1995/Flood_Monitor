@@ -124,6 +124,12 @@ def extract(text: str, country: str, start: str, end: str) -> dict | None:
     """Returns parsed dict (with meta_model/meta_tokens), or None to fall back."""
     if os.environ.get("USE_META_LLM") != "1":
         return None
+    try:
+        from meta_cost import meta_allowed
+        if not meta_allowed():
+            return None  # cap reached: caller falls back to heuristics
+    except Exception:
+        pass
     prompt = PROMPT_TMPL.format(country=country, start=start,
                                 end=end) + text[:6000]
     loc, usage = _baseten_extract(prompt)

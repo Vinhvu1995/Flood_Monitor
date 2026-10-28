@@ -86,6 +86,46 @@ class TestBasetenParsing(unittest.TestCase):
         self.assertEqual(meta_llm.BASETEN_MODEL, "meta-models/muse-spark-open-1026")
 
 
+class TestSpendCap(unittest.TestCase):
+    def test_cap_blocks_meta_path(self):
+        import tempfile
+        tmp = tempfile.mkdtemp() + "/c.jsonl"
+        with open(tmp, "w") as f:
+            f.write('{"cost": 150.0}\n')
+        old = meta_cost.COST_LOG
+        meta_cost.COST_LOG = tmp
+        os.environ["META_API_KEY"] = "k"
+        try:
+            self.assertFalse(meta_cost.meta_allowed())
+            self.assertIsNone(extract("flooding", "UK", "2026-10-24", "2026-10-26"))
+        finally:
+            meta_cost.COST_LOG = old
+            os.environ.pop("META_API_KEY", None)
+
+    def test_vision_notes_cap_fallback(self):
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", "..", "traffic-cameras"))
+        import tempfile
+        tmp = tempfile.mkdtemp() + "/c.jsonl"
+        with open(tmp, "w") as f:
+            f.write('{"cost": 999.0}\n')
+        import meta_cost as _mc
+        old = _mc.COST_LOG
+        _mc.COST_LOG = tmp
+        os.environ["USE_META_VISION"] = "1"
+        os.environ["BASETEN_API_KEY"] = "k"
+        try:
+            import vision as _v
+            out = _v.classify_flood(b"\xff" * 30000)
+        finally:
+            _mc.COST_LOG = old
+            os.environ.pop("USE_META_VISION", None)
+            os.environ.pop("BASETEN_API_KEY", None)
+        self.assertFalse(out["flooded"])
+        self.assertIn("cap reached", out["evidence"])
+
+
 class TestMetaCost(unittest.TestCase):
     def test_record_and_spent(self):
         import tempfile
