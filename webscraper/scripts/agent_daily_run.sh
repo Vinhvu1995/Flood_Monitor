@@ -4,6 +4,10 @@ set -u
 CC=${1:?UK|US}; START=${2:-}; DUR=${3:-2}
 export USE_MS_GEOCODER=1 PRECISION_JUDGE=1
 MODEL=${MODEL:-gpt-5-nano}
+# Credit guardrail: Baseten auto-check, soft-fail to heuristic fallback.
+if [ -x scripts/check_credits.sh ]; then
+  scripts/check_credits.sh >> cron_logs/credit_checks.log 2>&1 || USE_META_LLM="" USE_META_VISION=""
+fi
 START_TS=$(date +%s)
 if [ -n "$START" ]; then
   PY_CMD=".venv/bin/python src/main_country.py --country $CC --start-date $START --duration $DUR --fname ${START}_${CC}_manual --model=$MODEL"

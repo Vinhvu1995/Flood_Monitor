@@ -63,6 +63,16 @@ def main(argv=None):
     p.add_argument("--test-asc", default=None)
     a = p.parse_args(argv)
     state = load_state()
+    if a.dry_run:
+        try:
+            from vision import enabled as _vision_on
+            vision = "baseten" if _vision_on() else "heuristic"
+        except Exception:
+            vision = "heuristic"
+        print(json.dumps({"dry_run": True, "asc": asc_path(a.rainfall_dir),
+                          "threshold": a.threshold, "vision": vision,
+                          "windows": len(state.get("windows", {}))}))
+        return 0
     print(json.dumps({"asc": asc_path(a.rainfall_dir), "threshold": a.threshold,
                       "windows": len(state.get("windows", {}))}))
     return 0
