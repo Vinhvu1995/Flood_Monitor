@@ -84,7 +84,7 @@ def _extract_json(raw: str) -> dict | None:
             loc = json.loads(m.group(0))
         except (json.JSONDecodeError, ValueError):
             return None
-    if isinstance(loc, dict) and "flood_event" in loc:
+    if isinstance(loc, dict) and ("flood_event" in loc or "flooded" in loc):
         loc.setdefault("locations", [])
         return loc
     return None

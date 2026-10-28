@@ -47,11 +47,21 @@ def _baseten_vision(image_bytes: bytes) -> dict | None:
         return None
     if loc is None or "flooded" not in loc:
         return None
-    return {"flooded": bool(loc["flooded"]),
-            "confidence": float(loc.get("confidence", 0.5)),
-            "evidence": "baseten:" + VISION_MODEL + " " + str(loc.get("evidence", ""))[:400],
-            "tokens": {"in": (usage or {}).get("prompt_tokens"),
-                       "out": (usage or {}).get("completion_tokens")}}
+    out = {"flooded": bool(loc["flooded"]),
+           "confidence": float(loc.get("confidence", 0.5)),
+           "evidence": "baseten:" + VISION_MODEL + " " + str(loc.get("evidence", ""))[:400],
+           "tokens": {"in": (usage or {}).get("prompt_tokens"),
+                      "out": (usage or {}).get("completion_tokens")}}
+    try:
+        import sys as _sys2
+        _sys2.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          "..", "webscraper", "src"))
+        from meta_cost import record as _cost_record
+        _cost_record("baseten:" + VISION_MODEL, out["tokens"],
+                     run_id=os.environ.get("RUN_ID", "vision"))
+    except Exception:
+        pass
+    return out
 
 
 def _sam_mask(image_bytes: bytes, sidecar_path: str | None) -> str | None:
