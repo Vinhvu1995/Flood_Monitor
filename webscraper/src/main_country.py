@@ -325,6 +325,16 @@ def run_pipeline(args, hooks=None) -> dict:
             summary["gates"]["date_guard_articles"] = summary["gates"].get("date_guard_articles", 0) + 1
             continue
         res = llm_fn(text) if llm_fn else llm_extract(text, cfg.country_name, start, end, args.model)
+        if res.get("meta_model"):
+            try:
+                from meta_cost import record as _cost_record
+                entry = _cost_record(res["meta_model"], res.get("meta_tokens"),
+                                     run_id=fname)
+                summary.setdefault("meta_cost_usd", 0.0)
+                summary["meta_cost_usd"] = round(summary["meta_cost_usd"] + entry["cost"], 4)
+                summary["meta_model"] = res["meta_model"]
+            except Exception:
+                pass
         for loc in (res.get("locations") or []):
             name = loc.get("name", "")
             if not proximity_gate(name, text):
