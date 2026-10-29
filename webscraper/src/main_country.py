@@ -107,8 +107,69 @@ def fetch_text(url: str, timeout=20) -> tuple[str, dict]:
     text = re.sub(r"<[^>]+>", " ", body)
     text = re.sub(r"\s+", " ", title + " " + text).strip()
     ratio = len(links) / max(len(text), 1)
+    images = parse_article_images(raw)
+    return text, {"main_images": images, "link_ratio": ratio}
+
+
+def parse_article_images(raw: str, limit: int = 3) -> list:
+    """og:image + <img> tags with caption/alt/figure context (testable, no I/O)."""
+    raw = raw or ""
     imgs = re.findall(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', raw, re.I)
-    return text, {"main_images": imgs[:3], "link_ratio": ratio}
+    images = [{"url": u, "context": ""} for u in imgs[:limit]]
+    seen = {u for u in imgs[:limit]}
+    for m in re.finditer(r"<img\b[^>]*>", raw, re.I):
+        if len(images) >= limit:
+            break
+        tag = m.group(0)
+        src = re.search(r'''(?:data-src|src)=["']([^"']+)''', tag, re.I)
+        if not src or not src.group(1).startswith("http"):
+            continue
+        if src.group(1) in seen:
+            continue
+        seen.add(src.group(1))
+        alt = re.search(r'''alt=["']([^"']*)''', tag, re.I)
+        title = re.search(r'''title=["']([^"']*)''', tag, re.I)
+        ctx = " ".join(x for x in [
+            alt.group(1) if alt else "", title.group(1) if title else ""] if x).strip()
+        # enclosing <figure> text (captions live here, not in attributes)
+        start = max(0, m.start() - 5000)
+        fig_open = raw.rfind("<figure", start, m.start())
+        if fig_open != -1:
+            fig_close = raw.find("</figure>", m.end(), m.end() + 5000)
+            fig = raw[fig_open: fig_close + 9 if fig_close != -1 else m.end()]
+            fig_txt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", fig)).strip()
+            ctx = (ctx + " " + fig_txt).strip()[:500]
+        images.append({"url": src.group(1), "context": ctx})
+    return images
+
+
+def road_near_image(road: str, images) -> dict | None:
+    """First image whose caption/alt/figure context names the road (else None)."""
+    road = (road or "").split(",")[0].strip().lower()
+    if not road:
+        return None
+    for im in images or []:
+        if not isinstance(im, dict):
+            continue
+        if road and road in (im.get("context") or "").lower():
+            return im
+    return None
+
+
+def download_image(url: str, timeout=15, max_bytes=10_000_000) -> bytes | None:
+    """Download one article image. None on any failure (never raises)."""
+    if not (url or "").startswith("http"):
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            ctype = (r.headers.get("Content-Type", "") or "").lower()
+            if "image" not in ctype:
+                return None
+            data = r.read(max_bytes + 1)
+            return data if data and len(data) <= max_bytes else None
+    except Exception:
+        return None
 
 
 NON_PLACE = re.compile(
@@ -303,6 +364,7 @@ def run_pipeline(args, hooks=None) -> dict:
     # Step 2 scrape
     fetch = hooks.get("fetch") or (lambda u: ("", {"error": "no-fetcher"}))
     rows, snippet_fallback, lsr_points = [], 0, []
+    images_by_url: dict = {}
     llm_fn = hooks.get("llm")
     for it in urls:
         u = it.get("url", "")
@@ -310,6 +372,8 @@ def run_pipeline(args, hooks=None) -> dict:
         if reason:
             continue
         text, meta = fetch_text(u) if fetch == "http" else fetch(u)
+        if isinstance(meta, dict):
+            images_by_url[u] = meta.get("main_images", []) or []
         if len(text) < 200:
             text = it.get("snippet", "") or text
             snippet_fallback += 1 if text else 0
@@ -357,6 +421,46 @@ def run_pipeline(args, hooks=None) -> dict:
     kept += [{"url": "", "name": p.get("name", ""), "confidence": 1.0,
               "location_type": "road", "geometry_kind": "point",
               "lat": p.get("lat"), "lon": p.get("lon")} for p in lsr_points]
+    # Step 5a news-image SAM: road rows only, only when the road is named
+    # near the picture (image caption/alt/figure context), capped per run.
+    sam_cap = int(os.environ.get("SAM_IMAGE_CAP", 10))
+    sam_checked = sam_flooded = 0
+    for r in kept:
+        r["sam_checked"] = False
+        if r.get("location_type") != "road" or sam_checked >= sam_cap:
+            continue
+        road = (r.get("name", "") or "").split(",")[0].strip().lower()
+        if not road:
+            continue
+        near = road_near_image(road, images_by_url.get(r.get("url", ""), []))
+        if not near:
+            continue
+        try:
+            from meta_cost import meta_allowed
+            if not meta_allowed():
+                break
+        except Exception:
+            pass
+        img_bytes = download_image(near.get("url", ""))
+        if not img_bytes:
+            continue
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "..", "..", "traffic-cameras"))
+            from vision import sam_flood_check
+        except Exception:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", road)[:60] or "road"
+        sidecar = os.path.join(root, "Logs", "sam_masks", f"{slug}-{sam_checked}")
+        os.makedirs(os.path.dirname(sidecar), exist_ok=True)
+        verdict = sam_flood_check(img_bytes, sidecar)
+        r["sam_checked"] = bool(verdict.get("sam_ran"))
+        r["sam_flooded"] = verdict.get("flooded")
+        r["sam_water_fraction"] = verdict.get("water_fraction")
+        r["sam_mask"] = verdict.get("mask_path")
+        sam_checked += 1 if verdict.get("sam_ran") else 0
+        sam_flooded += 1 if verdict.get("flooded") else 0
+    summary["sam_images"] = {"checked": sam_checked, "flooded": sam_flooded, "cap": sam_cap}
     # Step 5b safety write + Step 9 write
     with open(os.path.join(root, "Vectorised_Files", f"points_{start.replace('-', '')}.geojson"), "w") as f:
         json.dump({"type": "FeatureCollection", "features": [

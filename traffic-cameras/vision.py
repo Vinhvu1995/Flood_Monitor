@@ -64,18 +64,16 @@ def _baseten_vision(image_bytes: bytes) -> dict | None:
     return out
 
 
-def _sam_mask(image_bytes: bytes, sidecar_path: str | None) -> str | None:
-    """SAM 3.1 water mask via Model API Responses API (model sam-3.1).
+SAM_WATER_THRESHOLD = float(os.environ.get("SAM_WATER_THRESHOLD", 0.02))
 
-    Per meta-models/meta-sam: base defaults to https://api.meta.ai/v1.
-    Returns the mask path, or None (honest) when keyless, shape-unknown,
-    or failed. Never raises, never fabricates a mask.
-    """
+
+def _sam_mask_bytes(image_bytes: bytes) -> tuple:
+    """Raw SAM 3.1 call. Returns (png_bytes|None, usage). Never raises."""
     from meta_llm import META_BASE_DEFAULT, SAM_MODEL_DEFAULT, meta_key
     base = os.environ.get("SAM_API_BASE_URL", META_BASE_DEFAULT).rstrip("/")
     key = os.environ.get("SAM_API_KEY", "") or meta_key()
-    if not key or sidecar_path is None:
-        return None
+    if not key:
+        return None, {}
     body = json.dumps({
         "model": os.environ.get("SAM_MODEL", SAM_MODEL_DEFAULT),
         "input": [{"role": "user", "content": [
@@ -93,14 +91,78 @@ def _sam_mask(image_bytes: bytes, sidecar_path: str | None) -> str | None:
         with urllib.request.urlopen(req, timeout=180) as r:
             raw = r.read().decode("utf-8", "replace")
     except Exception:
-        return None
+        return None, {}
     m = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", raw)
     if not m:
+        return None, {}
+    try:
+        return base64.b64decode(m.group(1)), {}
+    except Exception:
+        return None, {}
+
+
+def sam_water_fraction(mask_png: bytes):
+    """Fraction of white pixels in a binary mask (PIL). None when undecodable."""
+    try:
+        from PIL import Image
+        import io
+        im = Image.open(io.BytesIO(mask_png)).convert("L")
+        px = list(im.getdata())
+        if not px:
+            return None
+        return sum(1 for p in px if p >= 128) / len(px)
+    except Exception:
+        return None
+
+
+def sam_flood_check(image_bytes: bytes, sidecar_path=None) -> dict:
+    """Run SAM 3.1 on one image; verdict from mask water coverage.
+
+    Returns {flooded, water_fraction, confidence, evidence, mask_path}.
+    flooded = fraction >= SAM_WATER_THRESHOLD (default 0.02). Confidence is
+    a stated heuristic mapping, not a calibrated probability.
+    """
+    png, _ = _sam_mask_bytes(image_bytes)
+    if not png:
+        return {"flooded": False, "water_fraction": None, "confidence": 0.0,
+                "evidence": "sam unavailable (no key, shape unknown, or failed)",
+                "mask_path": None, "sam_ran": False}
+    frac = sam_water_fraction(png)
+    if frac is None:
+        return {"flooded": False, "water_fraction": None, "confidence": 0.0,
+                "evidence": "sam mask undecodable", "mask_path": None, "sam_ran": True}
+    flooded = frac >= SAM_WATER_THRESHOLD
+    conf = round(min(0.95, 0.55 + frac) if flooded else max(0.05, 0.9 - frac * 20), 2)
+    mask_path = None
+    if sidecar_path is not None:
+        try:
+            mask_path = sidecar_path + ".mask.png"
+            with open(mask_path, "wb") as f:
+                f.write(png)
+        except Exception:
+            mask_path = None
+    return {"flooded": flooded, "water_fraction": round(frac, 4),
+            "confidence": conf,
+            "evidence": f"sam-3.1 water coverage {frac:.3f} vs threshold {SAM_WATER_THRESHOLD}",
+            "mask_path": mask_path, "sam_ran": True}
+
+
+def _sam_mask(image_bytes: bytes, sidecar_path: str | None) -> str | None:
+    """SAM 3.1 water mask via Model API Responses API (model sam-3.1).
+
+    Per meta-models/meta-sam: base defaults to https://api.meta.ai/v1.
+    Returns the mask path, or None (honest) when keyless, shape-unknown,
+    or failed. Never raises, never fabricates a mask.
+    """
+    if sidecar_path is None:
+        return None
+    png, _ = _sam_mask_bytes(image_bytes)
+    if not png:
         return None
     try:
         out = sidecar_path + ".mask.png"
         with open(out, "wb") as f:
-            f.write(base64.b64decode(m.group(1)))
+            f.write(png)
         return out
     except Exception:
         return None
