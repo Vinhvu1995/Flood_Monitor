@@ -130,11 +130,16 @@ class TestMetaCost(unittest.TestCase):
     def test_record_and_spent(self):
         import tempfile
         tmp = tempfile.mkdtemp() + "/c.jsonl"
-        e = meta_cost.record("baseten:muse-spark-open-1026",
-                             {"in": 1000000, "out": 100000}, run_id="t")
+        old = meta_cost.COST_LOG
+        meta_cost.COST_LOG = tmp
+        try:
+            e = meta_cost.record("baseten:muse-spark-open-1026",
+                                 {"in": 1000000, "out": 100000}, run_id="t")
+        finally:
+            meta_cost.COST_LOG = old
         self.assertGreater(e["cost"], 0)
-        # spent_since default path untouched; check file-local math instead
-        self.assertEqual(meta_cost.spent_since(tmp), 0.0)
+        self.assertEqual(meta_cost.spent_since(tmp), e["cost"])
+        self.assertEqual(meta_cost.spent_since(tmp + ".missing"), 0.0)
 
     def test_cost_math(self):
         c = meta_cost.cost_usd("baseten:x", 1_000_000, 0)

@@ -16,7 +16,28 @@ RESP=$(curl -s -m 20 -H "Authorization: Bearer $BASETEN_API_KEY" \
 # Redact any accidental key echo, log raw shape without secrets.
 CLEAN=$(printf '%s' "$RESP" | sed -E 's/[A-Za-z0-9_\-]{20,}/<redacted>/g' | head -c 1500)
 echo "{\"baseten\":\"checked\",\"usage\":$CLEAN,\"action\":\"gate-on-credits_used\"}"
-USED=$(printf '%s' "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('credits_used','?'))" 2>/dev/null || echo "?")
+USED=$(printf '%s' "$RESP" | python3 -c "
+import sys, json
+def find(o):
+    if isinstance(o, dict):
+        if 'credits_used' in o:
+            return o['credits_used']
+        for v in o.values():
+            r = find(v)
+            if r is not None:
+                return r
+    elif isinstance(o, list):
+        for v in o:
+            r = find(v)
+            if r is not None:
+                return r
+    return None
+try:
+    v = find(json.load(sys.stdin))
+    print('?' if v is None else v)
+except Exception:
+    print('?')
+" 2>/dev/null || echo "?")
 echo "credits_used=$USED (cap \$100; near cap -> fallback-heuristic)" | sed -E 's/[A-Za-z0-9_\-]{20,}/<redacted>/g'
 [ "$DRY" = "1" ] && exit 0
 python3 - "$USED" <<'EOF' 2>/dev/null || exit 1
