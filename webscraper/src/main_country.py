@@ -365,6 +365,7 @@ def run_pipeline(args, hooks=None) -> dict:
     fetch = hooks.get("fetch") or (lambda u: ("", {"error": "no-fetcher"}))
     rows, snippet_fallback, lsr_points = [], 0, []
     images_by_url: dict = {}
+    article_texts: dict = {}
     llm_fn = hooks.get("llm")
     for it in urls:
         u = it.get("url", "")
@@ -379,6 +380,7 @@ def run_pipeline(args, hooks=None) -> dict:
             snippet_fallback += 1 if text else 0
         if not text:
             continue
+        article_texts[u] = text[:20000]  # persisted for reproducible validation
         if is_lsr_page(u, text):
             for rec in parse_lsr(text):
                 lsr_points.append({"name": rec.place_override or rec.county,
@@ -462,6 +464,8 @@ def run_pipeline(args, hooks=None) -> dict:
         sam_flooded += 1 if verdict.get("flooded") else 0
     summary["sam_images"] = {"checked": sam_checked, "flooded": sam_flooded, "cap": sam_cap}
     # Step 5b safety write + Step 9 write
+    with open(os.path.join(root, "Logs", "article_texts.json"), "w") as f:
+        json.dump(article_texts, f)
     with open(os.path.join(root, "Vectorised_Files", f"points_{start.replace('-', '')}.geojson"), "w") as f:
         json.dump({"type": "FeatureCollection", "features": [
             {"type": "Feature", "geometry": None, "properties": k} for k in kept]}, f)

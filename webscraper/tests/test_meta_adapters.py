@@ -61,6 +61,44 @@ class TestMetaAdapters(unittest.TestCase):
         self.assertFalse(keep)
         self.assertIn("contamination", reason)
 
+    def test_meta_on_accepts_baseten_key(self):
+        import validation_agent as va
+        os.environ["USE_META_LLM"] = "1"
+        os.environ["BASETEN_API_KEY"] = "k"
+        try:
+            self.assertTrue(va._meta_on())
+        finally:
+            os.environ.pop("USE_META_LLM", None)
+            os.environ.pop("BASETEN_API_KEY", None)
+
+    def test_parse_verdict(self):
+        from validation_agent import _parse_verdict
+        self.assertEqual(_parse_verdict('{"keep": false, "reason": "chrome"}')["keep"], False)
+        self.assertEqual(_parse_verdict('```json\n{"keep": true, "reason": "ok"}\n```')["keep"], True)
+        self.assertIsNone(_parse_verdict("no json here"))
+
+    def test_meta_confirm_passes_evidence(self):
+        import validation_agent as va
+        seen = {}
+        real = va._meta_verdict
+        va._meta_verdict = lambda prompt: (seen.update(prompt=prompt) or
+                                           ({"keep": False, "reason": "byline"}, "test"))
+        os.environ["USE_META_LLM"] = "1"
+        os.environ["BASETEN_API_KEY"] = "k"
+        try:
+            keep, reason = va.meta_confirm("http://x", {"location": "York"},
+                                           (True, "rule"),
+                                           "By Jane Doe flooding in York today")
+        finally:
+            va._meta_verdict = real
+            os.environ.pop("USE_META_LLM", None)
+            os.environ.pop("BASETEN_API_KEY", None)
+        self.assertFalse(keep)
+        self.assertIn("By Jane Doe", seen["prompt"])
+        # empty evidence keeps prior without calling the model
+        keep2, _ = va.meta_confirm("http://x", {"location": "York"}, (True, "rule"), "")
+        self.assertTrue(keep2)
+
     def test_rule_verdict_out_of_window(self):
         keep, reason = rule_verdict("http://x", {"location": "York"},
                                     "flooding in York", "out_of_window")

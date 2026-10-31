@@ -6,6 +6,10 @@ from article_signals import date_signal
 
 def load_texts(run_dir):
     texts, snippets = {}, {}
+    persisted = os.path.join(run_dir, "Logs", "article_texts.json")
+    if os.path.exists(persisted):
+        with open(persisted) as f:
+            texts = json.load(f) or {}
     for pat in (os.path.join(run_dir, "Logs", "*_extracted_sources.csv"),
                 os.path.join(run_dir, "Logs", "*_results.csv")):
         for p in glob.glob(pat):
@@ -24,6 +28,8 @@ def load_texts(run_dir):
 def main(argv):
     run_dir = argv[1]
     summaries = glob.glob(os.path.join(run_dir, "Logs", "*_run_summary.json"))
+    if not summaries:
+        summaries = glob.glob(os.path.join(run_dir, "Logs", "run_summary.json"))
     with open(sorted(summaries)[-1]) as f:
         summ = json.load(f)
     window = summ.get("window", {})
