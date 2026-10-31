@@ -81,6 +81,59 @@ class TestNewsImages(unittest.TestCase):
         self.assertEqual(out["confidence"], 0.0)
         self.assertFalse(out["sam_ran"])
 
+    def test_check_news_image_prefers_sam(self):
+        import vision
+        real_mask, real_cls = vision._sam_mask_bytes, vision.classify_flood
+        vision._sam_mask_bytes = lambda b: (self._png_bytes(0.5), {})
+        try:
+            out = vision.check_news_image(b"x", None)
+        finally:
+            vision._sam_mask_bytes, vision.classify_flood = real_mask, real_cls
+        self.assertEqual(out["backend"], "sam-3.1")
+        self.assertTrue(out["flooded"])
+
+    def test_check_news_image_falls_back_to_baseten_vision(self):
+        import vision
+        real_mask, real_cls = vision._sam_mask_bytes, vision.classify_flood
+        vision._sam_mask_bytes = lambda b: (None, {})
+        vision.classify_flood = lambda b, s=None: {"flooded": True, "confidence": 0.8,
+                                                   "evidence": "v", "mask_path": None}
+        os.environ["USE_META_VISION"] = "1"
+        os.environ["BASETEN_API_KEY"] = "k"
+        try:
+            out = vision.check_news_image(b"x", None)
+        finally:
+            vision._sam_mask_bytes, vision.classify_flood = real_mask, real_cls
+            os.environ.pop("USE_META_VISION", None)
+            os.environ.pop("BASETEN_API_KEY", None)
+        self.assertTrue(out["backend"].startswith("baseten:"))
+        self.assertTrue(out["flooded"])
+        self.assertIsNone(out["water_fraction"])
+
+    def test_check_news_image_no_backend(self):
+        import vision
+        real_mask, real_en = vision._sam_mask_bytes, vision.enabled
+        vision._sam_mask_bytes = lambda b: (None, {})
+        vision.enabled = lambda: False
+        try:
+            out = vision.check_news_image(b"x", None)
+        finally:
+            vision._sam_mask_bytes, vision.enabled = real_mask, real_en
+        self.assertEqual(out["backend"], "none")
+        self.assertFalse(out["flooded"])
+
+    def _png_bytes(self, frac):
+        import io
+        from PIL import Image
+        im = Image.new("L", (10, 10), 0)
+        px = im.load()
+        n = int(100 * frac)
+        for i in range(n):
+            px[i % 10, i // 10] = 255
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
 
 if __name__ == "__main__":
     unittest.main()

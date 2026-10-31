@@ -449,18 +449,19 @@ def run_pipeline(args, hooks=None) -> dict:
         try:
             sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                             "..", "..", "traffic-cameras"))
-            from vision import sam_flood_check
+            from vision import check_news_image
         except Exception:
             continue
         slug = re.sub(r"[^a-z0-9]+", "-", road)[:60] or "road"
         sidecar = os.path.join(root, "Logs", "sam_masks", f"{slug}-{sam_checked}")
         os.makedirs(os.path.dirname(sidecar), exist_ok=True)
-        verdict = sam_flood_check(img_bytes, sidecar)
-        r["sam_checked"] = bool(verdict.get("sam_ran"))
+        verdict = check_news_image(img_bytes, sidecar)
+        r["sam_checked"] = verdict.get("backend", "none") != "none"
+        r["sam_backend"] = verdict.get("backend", "none")
         r["sam_flooded"] = verdict.get("flooded")
         r["sam_water_fraction"] = verdict.get("water_fraction")
         r["sam_mask"] = verdict.get("mask_path")
-        sam_checked += 1 if verdict.get("sam_ran") else 0
+        sam_checked += 1 if r["sam_checked"] else 0
         sam_flooded += 1 if verdict.get("flooded") else 0
     summary["sam_images"] = {"checked": sam_checked, "flooded": sam_flooded, "cap": sam_cap}
     # Step 5b safety write + Step 9 write

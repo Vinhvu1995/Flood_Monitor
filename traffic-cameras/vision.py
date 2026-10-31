@@ -115,6 +115,28 @@ def sam_water_fraction(mask_png: bytes):
         return None
 
 
+def check_news_image(image_bytes: bytes, sidecar_path=None) -> dict:
+    """Flood verdict for a news article image using existing APIs.
+
+    Tries SAM 3.1 first (needs Model API key); falls back to Baseten Spark
+    vision verdict (needs BASETEN_API_KEY); else reports unavailable.
+    Never raises. Always names its backend.
+    """
+    sam = sam_flood_check(image_bytes, sidecar_path)
+    if sam.get("sam_ran"):
+        sam["backend"] = "sam-3.1"
+        return sam
+    if enabled():
+        v = classify_flood(image_bytes, sidecar_path)
+        return {"flooded": v.get("flooded", False), "water_fraction": None,
+                "confidence": v.get("confidence", 0.0),
+                "evidence": v.get("evidence", ""), "mask_path": v.get("mask_path"),
+                "sam_ran": False, "backend": "baseten:" + VISION_MODEL}
+    return {"flooded": False, "water_fraction": None, "confidence": 0.0,
+            "evidence": "no image backend configured (no Model API or Baseten key)",
+            "mask_path": None, "sam_ran": False, "backend": "none"}
+
+
 def sam_flood_check(image_bytes: bytes, sidecar_path=None) -> dict:
     """Run SAM 3.1 on one image; verdict from mask water coverage.
 
